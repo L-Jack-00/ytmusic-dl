@@ -11,6 +11,7 @@ Constructs an AV-friendly, non-heuristic portable distribution:
 """
 import os
 import sys
+import glob
 import shutil
 import subprocess
 import zipfile
@@ -88,6 +89,29 @@ def run_build():
     except Exception as e:
         print(f"    [!] Warning: Failed to bundle ffmpeg: {e}")
 
+    # 2-1. Deno JS 런타임 격리 번들링 (_internal 폴더 내부로 격리)
+    print("[*] Bundling Deno JS runtime into isolated _internal directory...")
+    try:
+        deno_src = shutil.which("deno")
+        if not deno_src:
+            local_app_data = os.environ.get("LOCALAPPDATA", "")
+            if local_app_data:
+                for c in glob.glob(os.path.join(local_app_data, "Microsoft", "WinGet", "Packages", "DenoLand.Deno*")):
+                    cand = os.path.join(c, "deno.exe")
+                    if os.path.isfile(cand):
+                        deno_src = cand
+                        break
+        if deno_src and os.path.isfile(deno_src):
+            internal_dir = os.path.join(app_dir, "_internal")
+            os.makedirs(internal_dir, exist_ok=True)
+            deno_dst = os.path.join(internal_dir, "deno.exe")
+            shutil.copy2(deno_src, deno_dst)
+            print(f"    -> Copied isolated deno.exe to {deno_dst}")
+        else:
+            print("    [!] Warning: deno.exe not found on build host.")
+    except Exception as e:
+        print(f"    [!] Warning: Failed to bundle deno: {e}")
+
     # 3. 사용자 개인정보(세션 쿠키 및 다운로드 데이터) 완전 격리 (배포 패키지 미포함)
     print("[*] User credentials & runtime data cleanly isolated (0 private files in release bundle)")
 
@@ -105,7 +129,7 @@ def run_build():
     # 5. 사용 안내서 및 백신 오탐지 방지 가이드 생성
     guide_path = os.path.join(app_dir, "USER_GUIDE.txt")
     guide_content = """================================================================================
- ytmusic-dl v1.3.6 (포터블 에디션)
+ ytmusic-dl v1.3.7 (포터블 에디션)
 ================================================================================
 
 [프로그램 개요]
@@ -152,7 +176,7 @@ UPX 압축을 일체 사용하지 않아 윈도우 디펜더 및 각종 백신 �
     print(f"    -> Created {guide_path}")
 
     # 6. 최종 포터블 ZIP 아카이브 압축
-    zip_filename = "ytmusic-dl_v1.3.6_Portable.zip"
+    zip_filename = "ytmusic-dl_v1.3.7_Portable.zip"
     zip_path = os.path.join(release_dir, zip_filename)
     print(f"[*] Packaging portable zip archive to {zip_path}...")
 

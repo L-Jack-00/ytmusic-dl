@@ -135,5 +135,42 @@ class TestStateAndDownloader(unittest.TestCase):
             # Should not raise NameError: name 'sys' is not defined or any other exception
             ensure_js_runtime()
 
+    def test_normalize_artist_name_and_channel_topic_guard(self):
+        from core.downloader import normalize_artist_name, _resolve_artist_from_channel
+        from unittest.mock import patch
+
+        # 1. '- 주제', '- Topic' 접미사 및 단독 '주제'/'Topic' 제거
+        self.assertEqual(normalize_artist_name("NewJeans - 주제"), "NewJeans")
+        self.assertEqual(normalize_artist_name("아이유 - Topic"), "아이유")
+        self.assertEqual(normalize_artist_name("주제"), "")
+        self.assertEqual(normalize_artist_name("Topic"), "")
+
+        # 2. 한국어 로케일 목록 구분자 ' 및 ' -> ' & ' 정규화
+        self.assertEqual(normalize_artist_name("로제 및 브루노 마스"), "로제 & 브루노 마스")
+        self.assertEqual(normalize_artist_name("아이유, 박명수 및 G-DRAGON"), "아이유, 박명수 & G-DRAGON")
+
+        # 3. 영문 아티스트 + '- 주제' 채널명에서 '주제'가 아티스트로 덮어써지지 않음 검증
+        self.assertEqual(_resolve_artist_from_channel("NewJeans - 주제", "NewJeans"), "NewJeans")
+        self.assertEqual(_resolve_artist_from_channel("아이유 - 주제", "IU"), "아이유")
+        self.assertEqual(_resolve_artist_from_channel("주제", "BTS"), "BTS")
+        self.assertEqual(_resolve_artist_from_channel("아이유 - 주제", ""), "아이유")
+
+        # 4. _extract_metadata 통합 검증
+        downloader = YtMusicDownloader(DownloadOptions(output_dir="./test_out"))
+        with patch("core.downloader.resolve_album_metadata", return_value={}):
+            meta1 = downloader._extract_metadata(
+                {"title": "Supernatural", "artist": "NewJeans", "channel": "NewJeans - 주제"},
+                track_index=1,
+                total_tracks=1,
+            )
+            self.assertEqual(meta1.artist, "NewJeans")
+
+            meta2 = downloader._extract_metadata(
+                {"title": "APT.", "artist": "로제 및 브루노 마스", "channel": "ROSÉ - 주제"},
+                track_index=1,
+                total_tracks=1,
+            )
+            self.assertEqual(meta2.artist, "로제 & 브루노 마스")
+
 if __name__ == '__main__':
     unittest.main()

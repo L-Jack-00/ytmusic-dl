@@ -135,6 +135,51 @@ def deduplicate_featuring_tags(title: str) -> str:
 
 _ytmusic_meta_cache: Dict[str, Tuple[Optional[str], Optional[str], Optional[str]]] = {}
 
+_TOPIC_SUFFIX_RE = re.compile(r'\s*-\s*(?:Topic|주제)\s*$', re.IGNORECASE)
+_TOPIC_TOKENS = {"topic", "주제"}
+
+
+def _has_hangul(text: Optional[str]) -> bool:
+    """텍스트에 완성형 한글이 포함되어 있는지 확인"""
+    return bool(text) and any('\uac00' <= c <= '\ud7a3' for c in text)
+
+
+def normalize_artist_name(artist: Optional[str]) -> str:
+    """
+    유튜브/유튜브 뮤직에서 추출된 아티스트명을 정제합니다.
+    - 자동 생성 채널 접미사('- 주제', '- Topic') 제거 및 단독 '주제'/'Topic' 무효화
+    - 한국어 로케일 목록 접속사(' 및 ')를 ' & '로 정규화
+    """
+    if not artist:
+        return ""
+    cleaned = _TOPIC_SUFFIX_RE.sub("", artist).strip()
+    if cleaned.lower() in _TOPIC_TOKENS:
+        return ""
+    cleaned = re.sub(r'\s+및\s+', ' & ', cleaned)
+    return re.sub(r'\s+', ' ', cleaned).strip()
+
+
+def _resolve_artist_from_channel(channel: Optional[str], current_artist: str) -> str:
+    """
+    채널명에서 한글 아티스트명을 안전하게 추출합니다.
+    'NewJeans - 주제' 등에서 '주제'가 아티스트로 잘못 채택되는 현상을 원천 차단합니다.
+    """
+    cur = normalize_artist_name(current_artist)
+    if not channel:
+        return cur
+    clean_channel = normalize_artist_name(channel)
+    if not cur:
+        return clean_channel
+    if _has_hangul(clean_channel) and not _has_hangul(cur):
+        if " - " in clean_channel:
+            for cp in clean_channel.split(" - "):
+                cp_s = cp.strip()
+                if _has_hangul(cp_s) and cp_s.lower() not in _TOPIC_TOKENS:
+                    return normalize_artist_name(cp_s)
+        else:
+            return clean_channel
+    return cur
+
 
 def fetch_ytmusic_localized_metadata(video_id: str, timeout: float = 3.0) -> Tuple[Optional[str], Optional[str], Optional[str]]:
     """
@@ -227,6 +272,9 @@ def fetch_ytmusic_localized_metadata(video_id: str, timeout: float = 3.0) -> Tup
                     canonical_id = canon_m.group(1)
         except Exception:
             pass
+
+    if ytm_artist:
+        ytm_artist = normalize_artist_name(ytm_artist) or None
 
     _ytmusic_meta_cache[video_id] = (ytm_title, ytm_artist, canonical_id)
     return ytm_title, ytm_artist, canonical_id
@@ -387,21 +435,13 @@ class YtMusicDownloader:
                 raw_t = entry.get('title') or f"Track {idx}"
                 raw_a = entry.get('artist') or entry.get('uploader') or ""
                 channel = entry.get('channel') or entry.get('uploader') or ""
-                if channel and any('\uac00' <= c <= '\ud7a3' for c in channel) and not any('\uac00' <= c <= '\ud7a3' for c in raw_a):
-                    if " - " in channel:
-                        for cp in channel.split(" - "):
-                            cp_s = cp.strip()
-                            if any('\uac00' <= c <= '\ud7a3' for c in cp_s) and "topic" not in cp_s.lower():
-                                raw_a = cp_s
-                                break
-                    elif "topic" not in channel.lower():
-                        raw_a = channel
+                raw_a = _resolve_artist_from_channel(channel, raw_a)
 
                 disp_title = raw_t
                 if " - " in raw_t:
                     p = raw_t.split(" - ", 1)
                     if any('\uac00' <= c <= '\ud7a3' for c in p[0]) and not any('\uac00' <= c <= '\ud7a3' for c in raw_a):
-                        raw_a = p[0].strip()
+                        raw_a = normalize_artist_name(p[0]) or raw_a
                     disp_title = p[1].strip()
 
                 disp_title = clean_display_title(disp_title)
@@ -438,6 +478,7 @@ class YtMusicDownloader:
                     elif ytm_a and not raw_a:
                         raw_a = ytm_a
 
+                raw_a = normalize_artist_name(raw_a)
                 track_url = f"https://www.youtube.com/watch?v={video_id}" if video_id else strip_playlist_params(entry.get('url') or "")
 
                 tracks.append({
@@ -457,21 +498,13 @@ class YtMusicDownloader:
             raw_t = info.get('title') or "Unknown Track"
             raw_a = info.get('artist') or info.get('uploader') or ""
             channel = info.get('channel') or info.get('uploader') or ""
-            if channel and any('\uac00' <= c <= '\ud7a3' for c in channel) and not any('\uac00' <= c <= '\ud7a3' for c in raw_a):
-                if " - " in channel:
-                    for cp in channel.split(" - "):
-                        cp_s = cp.strip()
-                        if any('\uac00' <= c <= '\ud7a3' for c in cp_s) and "topic" not in cp_s.lower():
-                            raw_a = cp_s
-                            break
-                elif "topic" not in channel.lower():
-                    raw_a = channel
+            raw_a = _resolve_artist_from_channel(channel, raw_a)
 
             disp_title = raw_t
             if " - " in raw_t:
                 p = raw_t.split(" - ", 1)
                 if any('\uac00' <= c <= '\ud7a3' for c in p[0]) and not any('\uac00' <= c <= '\ud7a3' for c in raw_a):
-                    raw_a = p[0].strip()
+                    raw_a = normalize_artist_name(p[0]) or raw_a
                 disp_title = p[1].strip()
 
             disp_title = clean_display_title(disp_title)
@@ -500,6 +533,7 @@ class YtMusicDownloader:
                 elif ytm_a and not raw_a:
                     raw_a = ytm_a
 
+            raw_a = normalize_artist_name(raw_a)
             # 재생목록 파라미터가 완전히 제거된 순수 단일 음원 URL 보장
             track_url = f"https://www.youtube.com/watch?v={video_id}" if video_id else strip_playlist_params(url)
 
@@ -890,17 +924,7 @@ class YtMusicDownloader:
 
         # 1. 아티스트 이름 보강:
         # 유튜브 뮤직 웹에서 보이는 한글 아티스트명 반영 (channel 또는 uploader에 한국어가 있는 경우)
-        if not artist:
-            artist = channel
-        elif channel and any('\uac00' <= c <= '\ud7a3' for c in channel) and not any('\uac00' <= c <= '\ud7a3' for c in artist):
-            if " - " in channel:
-                for cp in channel.split(" - "):
-                    cp_s = cp.strip()
-                    if any('\uac00' <= c <= '\ud7a3' for c in cp_s) and "topic" not in cp_s.lower():
-                        artist = cp_s
-                        break
-            elif "topic" not in channel.lower():
-                artist = channel
+        artist = _resolve_artist_from_channel(channel, artist)
 
         # 2. 영상 제목이 '가수 - 제목' 형태인 경우
         clean_title = raw_title
@@ -908,8 +932,8 @@ class YtMusicDownloader:
             parts = raw_title.split(" - ", 1)
             left_part = parts[0].strip()
             right_part = parts[1].strip()
-            if any('\uac00' <= c <= '\ud7a3' for c in left_part) and not any('\uac00' <= c <= '\ud7a3' for c in artist):
-                artist = left_part
+            if _has_hangul(left_part) and not _has_hangul(artist):
+                artist = normalize_artist_name(left_part) or artist
             clean_title = right_part
 
         # 3. 곡명 정제: 피처링(Feat. ...), 부제는 엄격 보존하고 영상 잡동사니 태그([MV], [가사] 등)만 정제
@@ -924,9 +948,9 @@ class YtMusicDownloader:
             if id_m:
                 video_id = id_m.group(1)
 
-        if video_id and (not any('\uac00' <= c <= '\ud7a3' for c in display_title) or (artist and not any('\uac00' <= c <= '\ud7a3' for c in artist))):
+        if video_id and (not _has_hangul(display_title) or (artist and not _has_hangul(artist))):
             ytm_title, ytm_artist, _ = fetch_ytmusic_localized_metadata(video_id)
-            if ytm_title and any('\uac00' <= c <= '\ud7a3' for c in ytm_title):
+            if ytm_title and _has_hangul(ytm_title):
                 # 원본 영상 제목에 (Inst.)가 없는데 ytm_title에 (Inst.)가 붙은 경우 게스트 프리뷰 왜곡 방지
                 if not re.search(r'\b(?:inst\.?|instrumental)\b', clean_title, flags=re.IGNORECASE):
                     ytm_title = re.sub(r'\s*\((?:inst\.?|instrumental)\)', '', ytm_title, flags=re.IGNORECASE).strip()
@@ -935,8 +959,12 @@ class YtMusicDownloader:
                     ytm_title = f"{ytm_title} {feat_match.group(1)}"
                 display_title = clean_display_title(ytm_title)
 
-            if ytm_artist and any('\uac00' <= c <= '\ud7a3' for c in ytm_artist) and not any('\uac00' <= c <= '\ud7a3' for c in artist):
-                artist = ytm_artist
+            if ytm_artist:
+                ytm_artist_norm = normalize_artist_name(ytm_artist)
+                if ytm_artist_norm and _has_hangul(ytm_artist_norm) and not _has_hangul(artist):
+                    artist = ytm_artist_norm
+
+        artist = normalize_artist_name(artist)
 
         release_year = None
         if info.get('release_year'):
@@ -983,7 +1011,7 @@ class YtMusicDownloader:
 
         return TrackMetadata(
             title=display_title or raw_title,
-            artist=artist or "Unknown Artist",
+            artist=normalize_artist_name(artist) or "Unknown Artist",
             album=album or display_title or raw_title,
             release_year=release_year,
             track_number=orig_track_number,
